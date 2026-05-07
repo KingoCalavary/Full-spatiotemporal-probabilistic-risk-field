@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RFI Construction Methods Comparison</title>
+    <style>
+        /* 暗黑主题风格，配合学术展示 */
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #eee; max-width: 1100px; margin: 0 auto; padding: 20px; background: #121212; }
+        h1 { text-align: center; color: #fff; font-size: 1.8rem; margin-bottom: 30px; font-weight: 500; letter-spacing: 1px;}
+        .controls { background: #1e1e24; padding: 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; margin-bottom: 30px; border: 1px solid #333; }
+        .control-group { display: flex; flex-direction: column; }
+        .control-group label { font-weight: 500; font-size: 0.9rem; margin-bottom: 8px; color: #ccc; }
+        .control-group input { width: 100%; cursor: pointer; accent-color: #5883fe; }
+        .control-group .val { font-size: 0.9rem; color: #5883fe; float: right; font-weight: bold; }
+        .visualization-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
+        .card { background: #1e1e24; padding: 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); text-align: center; border: 1px solid #333; }
+        .card h3 { font-size: 1.1rem; color: #fff; margin-top: 0; margin-bottom: 15px; border-bottom: 1px solid #444; padding-bottom: 10px; font-weight: 500; }
+        canvas { background: #0f0f13; border-radius: 6px; width: 100%; height: auto; image-rendering: pixelated; box-shadow: inset 0 0 10px rgba(0,0,0,1); }
+        .legend { margin-top: 30px; padding: 20px; background: #1e1e24; border-radius: 8px; font-size: 0.95rem; border: 1px solid #333; color: #ccc; }
+        .legend strong { color: #fff; font-size: 1.1rem; }
+        .legend ul { padding-left: 20px; margin-top: 10px; }
+        .legend li { margin-bottom: 12px; }
+        .legend em { color: #ee988c; font-style: normal; font-weight: bold; }
+        .footer { text-align: center; margin-top: 40px; color: #666; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+
+    <h1>Interactive Comparison of RFI Construction Methods</h1>
+
+    <div class="controls">
+        <div class="control-group">
+            <label>Vehicle Length (m) <span class="val" id="len-val">5.0</span></label>
+            <input type="range" id="len" min="2" max="10" step="0.1" value="5.0">
+        </div>
+        <div class="control-group">
+            <label>Vehicle Width (m) <span class="val" id="wid-val">2.0</span></label>
+            <input type="range" id="wid" min="1.5" max="4" step="0.1" value="2.0">
+        </div>
+        <div class="control-group">
+            <label>Long. Uncertainty (&sigma;<sub>lon</sub>) <span class="val" id="slon-val">0.8</span></label>
+            <input type="range" id="slon" min="0.1" max="3" step="0.05" value="0.8">
+        </div>
+        <div class="control-group">
+            <label>Lat. Uncertainty (&sigma;<sub>lat</sub>) <span class="val" id="slat-val">0.3</span></label>
+            <input type="range" id="slat" min="0.1" max="2" step="0.05" value="0.3">
+        </div>
+    </div>
+
+    <div class="visualization-grid">
+        <div class="card">
+            <h3>Variance Inflation</h3>
+            <canvas id="canvas-vi"></canvas>
+        </div>
+        <div class="card">
+            <h3>Sampling Approximation</h3>
+            <canvas id="canvas-sa"></canvas>
+        </div>
+        <div class="card">
+            <h3>Proposed Set-based</h3>
+            <canvas id="canvas-ps"></canvas>
+        </div>
+    </div>
+
+    <div class="legend">
+        <strong>Methodological Comparison Summary:</strong>
+        <ul>
+            <li><strong>Variance Inflation:</strong> Represents the vehicle as an enlarged ellipse. It <em>ignores rigid boundaries</em> and significantly underestimates risk at corners.</li>
+            <li><strong>Sampling Approximation:</strong> Performs mathematical convolution over the vehicle footprint. Notice that as uncertainties increase, it suffers from <em>plateau collapse</em> (the peak intensity drops below 1.0) and blurry edges.</li>
+            <li><strong>Proposed Set-based:</strong> Transforms the overlap integral into a geometric distance in a whitened space. It <em>ensures physical consistency</em> by maintaining a constant RFI of 1.0 strictly within the expanded physical boundaries, regardless of the uncertainty magnitude.</li>
+        </ul>
+    </div>
+
+    <div class="footer">
+        Supplementary visualization tool for proactive driving risk assessment research.
+    </div>
+
+    <script>
+        const canvasVI = document.getElementById('canvas-vi');
+        const canvasSA = document.getElementById('canvas-sa');
+        const canvasPS = document.getElementById('canvas-ps');
+        const ctxs = [canvasVI.getContext('2d'), canvasSA.getContext('2d'), canvasPS.getContext('2d')];
+
+        const inputs = ['len', 'wid', 'slon', 'slat'];
+        const values = {};
+
+        // Resolution and Scale settings
+        const W = 200; 
+        const H = 150;
+        const scale = 8; // 1 meter = 8 pixels, zooming out slightly to show field spread
+
+        ctxs.forEach(ctx => {
+            ctx.canvas.width = W;
+            ctx.canvas.height = H;
+        });
+
+        // Abramowitz and Stegun approximation for Error Function (erf)
+        // Crucial for mathematically accurate convolution in Sampling Approximation
+        function erf(x) {
+            const sign = (x >= 0) ? 1 : -1;
+            x = Math.abs(x);
+            const a1 =  0.254829592, a2 = -0.284496736, a3 =  1.421413741;
+            const a4 = -1.453152027, a5 =  1.061405429, p  =  0.3275911;
+            const t = 1.0 / (1.0 + p * x);
+            const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+            return sign * y;
+        }
+
+        // Custom Colormap matching the provided 1.jpg (Dark -> Blue -> Purple -> Pink -> Peach -> Bright)
+        const colormapStops = [
+            { v: 0.00, c: [15, 15, 20] },     // Dark Background
+            { v: 0.05, c: [35, 55, 90] },     // Faint Blue edge
+            { v: 0.20, c: [70, 130, 250] },   // Bright Blue
+            { v: 0.40, c: [160, 90, 240] },   // Purple
+            { v: 0.60, c: [230, 110, 150] },  // Pink
+            { v: 0.85, c: [250, 170, 130] },  // Peach
+            { v: 1.00, c: [255, 235, 210] }   // Bright Center
+        ];
+
+        function getRFIColor(val) {
+            val = Math.max(0, Math.min(1, val));
+            let start = colormapStops[0], end = colormapStops[colormapStops.length - 1];
+            for (let i = 0; i < colormapStops.length - 1; i++) {
+                if (val >= colormapStops[i].v && val <= colormapStops[i+1].v) {
+                    start = colormapStops[i];
+                    end = colormapStops[i+1];
+                    break;
+                }
+            }
+            const range = end.v - start.v;
+            const ratio = range === 0 ? 0 : (val - start.v) / range;
+            const r = Math.round(start.c[0] + ratio * (end.c[0] - start.c[0]));
+            const g = Math.round(start.c[1] + ratio * (end.c[1] - start.c[1]));
+            const b = Math.round(start.c[2] + ratio * (end.c[2] - start.c[2]));
+            return [r, g, b];
+        }
+
+        function draw() {
+            inputs.forEach(id => {
+                values[id] = parseFloat(document.getElementById(id).value);
+                // Force 1 decimal place display
+                document.getElementById(id + '-val').innerText = values[id].toFixed(1);
+            });
+
+            const { len, wid, slon, slat } = values;
+            const l2 = len / 2;
+            const w2 = wid / 2;
+
+            // Variance Inflation Equivalent Variances (Vehicle geometry treated as variance L^2/12)
+            const var_geom_x = (len * len) / 12;
+            const var_geom_y = (wid * wid) / 12;
+            const eq_var_x = var_geom_x + slon * slon;
+            const eq_var_y = var_geom_y + slat * slat;
+
+            ctxs.forEach((ctx, idx) => {
+                const imgData = ctx.createImageData(W, H);
+                const data = imgData.data;
+
+                for (let y = 0; y < H; y++) {
+                    for (let x = 0; x < W; x++) {
+                        const mx = (x - W/2) / scale;
+                        const my = (y - H/2) / scale;
+                        let rfi = 0;
+
+                        if (idx === 0) { 
+                            // 1. Variance Inflation: purely elliptical Gaussian
+                            rfi = Math.exp(-0.5 * ( (mx*mx)/eq_var_x + (my*my)/eq_var_y ));
+
+                        } else if (idx === 1) { 
+                            // 2. Sampling Approximation: True 2D Convolution of Uniform x Gaussian
+                            // 1/4 * [erf((x+L/2)/(sigma*sqrt(2))) - erf((x-L/2)/(sigma*sqrt(2)))] * [...]
+                            const sqrt2_slon = slon * Math.sqrt(2);
+                            const sqrt2_slat = slat * Math.sqrt(2);
+                            const termX = erf((mx + l2) / sqrt2_slon) - erf((mx - l2) / sqrt2_slon);
+                            const termY = erf((my + w2) / sqrt2_slat) - erf((my - w2) / sqrt2_slat);
+                            rfi = 0.25 * termX * termY;
+
+                        } else { 
+                            // 3. Proposed Set-based: Distance to set in whitened space
+                            const dx = Math.max(0, Math.abs(mx) - l2);
+                            const dy = Math.max(0, Math.abs(my) - w2);
+                            rfi = Math.exp(-0.5 * ( (dx*dx)/(slon*slon) + (dy*dy)/(slat*slat) ));
+                        }
+
+                        const offset = (y * W + x) * 4;
+                        const rgb = getRFIColor(rfi);
+                        data[offset] = rgb[0];
+                        data[offset + 1] = rgb[1];
+                        data[offset + 2] = rgb[2];
+                        data[offset + 3] = 255; // Alpha
+                    }
+                }
+                ctx.putImageData(imgData, 0, 0);
+
+                // Draw Vehicle OBB (Dashed White Line)
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 3]); // Dashed line
+                ctx.strokeRect(W/2 - l2*scale, H/2 - w2*scale, len*scale, wid*scale);
+                ctx.setLineDash([]); // Reset dash for crosshairs
+
+                // Draw Faint Center Crosshairs
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                ctx.beginPath();
+                ctx.moveTo(W/2 - 10, H/2);
+                ctx.lineTo(W/2 + 10, H/2);
+                ctx.moveTo(W/2, H/2 - 10);
+                ctx.lineTo(W/2, H/2 + 10);
+                ctx.stroke();
+            });
+        }
+
+        inputs.forEach(id => document.getElementById(id).addEventListener('input', draw));
+        // Initial Draw
+        draw();
+    </script>
+</body>
+</html>
