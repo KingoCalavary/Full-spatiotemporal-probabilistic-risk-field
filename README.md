@@ -1,1 +1,1 @@
-Interactive Comparison of RFI Construction Methods
+Interactive Comparison of risk field intensity (RFI) Construction Methods
